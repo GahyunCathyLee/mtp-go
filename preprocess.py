@@ -193,26 +193,27 @@ def _build_lane_tables(markings: np.ndarray):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# lc_state  (v3: latV + lane-centre-offset based)
+# lc_state  (v4: lco_norm-based boundary + slot-direction)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _lc_state_v3(ki: int, nb_lat_v: float, nb_lco: float) -> float:
-    if ki < 2:   # same-lane slot (preceding / following)
-        if (nb_lco < -1.0 and nb_lat_v > 0.0) or (nb_lco > 1.0 and nb_lat_v < 0.0):
-            return 0.0
-        elif (nb_lco < -1.0 and nb_lat_v < 0.0) or (nb_lco > 1.0 and nb_lat_v > 0.0) \
-                or abs(nb_lat_v) > 0.029:
-            return 2.0
-        else:
-            return 1.0
-    elif ki < 5:  # left-lane slots  (2, 3, 4)
-        if   nb_lat_v < -0.029: return 0.0
-        elif nb_lat_v >  0.029: return 2.0
-        else:                   return 1.0
-    else:         # right-lane slots (5, 6, 7)
-        if   nb_lat_v < -0.029: return 2.0
-        elif nb_lat_v >  0.029: return 0.0
-        else:                   return 1.0
+def _lc_state_v4(ki: int, nb_lat_v: float, nb_lco: float, nb_lw: float) -> float:
+    """
+    v4: normalise lane-centre offset by half lane-width.
+    If |lco_norm| <= 0.5 the vehicle is near lane centre → staying (1.0).
+    Otherwise direction depends on slot group and lateral velocity sign.
+
+    nb_lco  : signed lane-centre offset (positive = right of centre after flip)
+    nb_lw   : lane width at the neighbor's position (metres)
+    """
+    nb_lco_norm = nb_lco / (nb_lw * 0.5) if nb_lw > 0.5 else 0.0
+    if abs(nb_lco_norm) <= 0.5:
+        return 1.0
+    elif ki < 2:   # same-lane slots (preceding / following)
+        return 0.0 if nb_lco_norm * nb_lat_v < 0 else 2.0
+    elif ki < 5:   # left-lane slots  (2, 3, 4)
+        return 0.0 if nb_lat_v < 0 else 2.0
+    else:          # right-lane slots (5, 6, 7)
+        return 0.0 if nb_lat_v > 0 else 2.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -327,7 +328,7 @@ def process_recording(rec_id: str, args) -> Optional[List[dict]]:
     dd      = np.array([vid_to_dd.get(int(v_), 0) for v_ in vid], np.int8)
     x_max   = float(np.nanmax(xraw)) if xraw.size else 0.0
 
-    # ── Lane-centre offset (for lc_state v3) ─────────────────────────────────
+    # ── Lane-centre offset (for lc_state v4) ─────────────────────────────────
     _N_upper           = len(upper_mark)
     lat_lane_offset    = np.zeros(len(yraw), np.float32)
     _lid_arr           = lane_id.astype(np.int32)
@@ -347,6 +348,13 @@ def process_recording(rec_id: str, args) -> Optional[List[dict]]:
         - 0.5 * (upper_mark[_j_up[_ok_up]] + upper_mark[_j_up[_ok_up] + 1])
     )
     lat_lane_offset[dd == 1] *= -1.0   # negate for upper-dir after flip
+
+    # ── Lane width array (for lc_state v4: lco_norm = lco / (lw * 0.5)) ──────
+    lat_lane_width = np.full(len(yraw), 3.75, np.float32)   # default 3.75 m
+    lat_lane_width[_ok_lo] = np.abs(
+        lower_mark[_j_lo[_ok_lo] + 1] - lower_mark[_j_lo[_ok_lo]])
+    lat_lane_width[_ok_up] = np.abs(
+        upper_mark[_j_up[_ok_up] + 1] - upper_mark[_j_up[_ok_up]])
 
     # ── Flip upper-direction vehicles & recording-level shift ─────────────────
     upper_for_calc = upper_mark.copy()
@@ -506,10 +514,11 @@ def process_recording(rec_id: str, args) -> Optional[List[dict]]:
                     nb_dy_hist[ti, ki] = dy_
                     nb_ok_hist[ti, ki] = True
 
-                    # lc_state v3
-                    lc_state = _lc_state_v3(ki,
+                    # lc_state v4
+                    lc_state = _lc_state_v4(ki,
                                             float(yv[r]),
-                                            float(lat_lane_offset[r]))
+                                            float(lat_lane_offset[r]),
+                                            float(lat_lane_width[r]))
 
                     # LIT → LIS
                     half_sum   = 0.5 * (len_ego + len_nb)

@@ -61,6 +61,11 @@ DEFAULTS: Dict[str, Any] = {
     "tune_batch_size":  False,
     "small_ds":         False,
     "use_importance":   True,   # highD-imp only: False = drop importance → 6D features
+
+    # ── Preprocessing (preprocess.py) ─────────────────────────────────────────
+    "slot_importance_alpha": 0.0,   # >0 boosts I by empirical slot weight
+    "gate_topn":             0,     # keep only top-N slots per timestep (0 = all)
+    "gate_mask":             False, # NaN-fill gated slots (treat as absent)
 }
 
 

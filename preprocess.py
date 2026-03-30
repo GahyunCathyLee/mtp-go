@@ -62,6 +62,15 @@ IMP_LIS = {'sx': 1.0, 'ax': 0.15, 'bx': 0.2,
 IMP_LIT = {'sx': 15.0, 'ax': 0.2, 'bx': 0.25,
             'sy':  2.0, 'ay': 0.01, 'by': 0.1}
 
+# Empirical slot-level importance weights (from neighformer)
+# Order: preceding, following, leftPreceding, leftAlongside, leftFollowing,
+#        rightPreceding, rightAlongside, rightFollowing
+SLOT_WEIGHTS = [0.4944, 0.0411, 0.0935, 0.0074, 0.0002, 0.5559, 0.0000, 0.1179]
+
+# Tie-breaking priority for gate_topn (lower rank = higher priority)
+# Priority: slot 0 > 2 > 5 > 1 > 4 > 7 > 3 > 6
+_TOPN_SLOT_PRIORITY = {s: r for r, s in enumerate([0, 2, 5, 1, 4, 7, 3, 6])}
+
 SPLIT_DEFAULT = {
     'training':   (1,  43),
     'validation': (44, 51),
@@ -117,6 +126,27 @@ def _compute_importance_lit(lit, delta_lane, lc_state):
           * np.exp(-p['by'] * delta_lane))
     i  = float(np.sqrt((ix**2 + iy**2) / 2.0))
     return float(ix), float(iy), i
+
+
+def _apply_topn_gate(raw_imp_t: np.ndarray, nb_ok_t: np.ndarray, n: int) -> np.ndarray:
+    """
+    Keep only top-N neighbor slots by I value at one timestep.
+
+    raw_imp_t : (K, 3) — (ix, iy, i_total) per slot
+    nb_ok_t   : (K,)   — True if slot is present at this timestep
+    n         : max slots to keep (0 = keep all)
+
+    Returns a boolean keep-mask (K,) — False = gated out.
+    """
+    if n <= 0:
+        return np.ones(K, bool)
+    valid = [k for k in range(K) if nb_ok_t[k]]
+    valid.sort(key=lambda k: (-raw_imp_t[k, 2], _TOPN_SLOT_PRIORITY.get(k, K)))
+    selected = set(valid[:n])
+    keep = np.zeros(K, bool)
+    for k in valid:
+        keep[k] = (k in selected)
+    return keep
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -432,6 +462,10 @@ def process_recording(rec_id: str, args) -> Optional[List[dict]]:
             nb_dy_fut  = np.full((Tf, K), np.nan, np.float32)
             nb_ok_fut  = np.zeros((Tf, K), bool)
 
+            # Temporary buffer for importance (ix, iy, i_total) per (timestep, slot)
+            # Applied after all neighbors are processed (gate_topn needs all K slots)
+            raw_imp = np.zeros((T, K, 3), np.float32)
+
             # ── Neighbor nodes (indices 1..K) ─────────────────────────────────
             for ki, nid in enumerate(nb_ids):
                 if nid <= 0:
@@ -491,8 +525,9 @@ def process_recording(rec_id: str, args) -> Optional[List[dict]]:
                     else:
                         ix, iy, i_total = _compute_importance_lis(lis, delta_lane, lc_state)
 
-                    imp_vals = (ix, iy, i_total)
-                    inp[ki + 1, ti, 6] = float(imp_vals[imp_feat_idx])
+                    raw_imp[ti, ki, 0] = ix
+                    raw_imp[ti, ki, 1] = iy
+                    raw_imp[ti, ki, 2] = i_total
 
                 # Future
                 for fi, ff in enumerate(fut_frames):
@@ -521,6 +556,30 @@ def process_recording(rec_id: str, args) -> Optional[List[dict]]:
                     nb_dx_fut[fi, ki] = dx_f
                     nb_dy_fut[fi, ki] = dy_f
                     nb_ok_fut[fi, ki] = True
+
+            # ── Apply slot_importance_alpha boost, then gate_topn ────────────
+            slot_alpha = getattr(args, 'slot_importance_alpha', 0.0)
+            gate_topn  = getattr(args, 'gate_topn',  0)
+            gate_mask  = getattr(args, 'gate_mask',  False)
+
+            if slot_alpha > 0.0:
+                for ki in range(K):
+                    w = SLOT_WEIGHTS[ki]
+                    raw_imp[:, ki, 2] = np.minimum(
+                        raw_imp[:, ki, 2] * (1.0 + slot_alpha * w), 1.0)
+
+            for ti in range(T):
+                keep = _apply_topn_gate(raw_imp[ti], nb_ok_hist[ti], gate_topn)
+                for ki in range(K):
+                    if not nb_ok_hist[ti, ki]:
+                        continue
+                    if keep[ki]:
+                        inp[ki + 1, ti, 6] = float(raw_imp[ti, ki, imp_feat_idx])
+                    else:
+                        inp[ki + 1, ti, 6] = 0.0
+                        if gate_mask:
+                            inp[ki + 1, ti, :] = np.nan
+                            nb_ok_hist[ti, ki]  = False
 
             # ── Build edge indices / features ──────────────────────────────────
             hist_ei, hist_ef = [], []
@@ -706,6 +765,14 @@ if __name__ == '__main__':
                     help='LIS binning granularity (used when importance_mode=lis)')
     ap.add_argument('--eps_gate',  type=float, default=1.0,
                     help='Epsilon for LIT denominator stabilisation')
+    ap.add_argument('--slot_importance_alpha', type=float, default=0.0,
+                    help='Boost I by empirical slot weight: I_new = min(I*(1+alpha*w_slot), 1.0). '
+                         '0.0 = disabled')
+    ap.add_argument('--gate_topn', type=int, default=0,
+                    help='Keep only top-N neighbor slots by I per timestep. 0 = keep all')
+    ap.add_argument('--gate_mask', action='store_true', default=False,
+                    help='If set, gated-out slots are NaN-filled (treated as absent) '
+                         'rather than just having their importance zeroed')
 
     # Train/val/test split by recording ID
     ap.add_argument('--train_start', type=int, default=SPLIT_DEFAULT['training'][0])

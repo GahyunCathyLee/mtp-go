@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import multiprocessing
 import os
 import shutil
 from dataclasses import dataclass
@@ -686,6 +687,12 @@ def _rec_id_str(n: int) -> str:
     return f'{n:02d}'
 
 
+def _process_rec_worker(rec_id_args):
+    """Top-level picklable worker for multiprocessing.Pool."""
+    rec_id, args = rec_id_args
+    return rec_id, process_recording(rec_id, args)
+
+
 def main(args) -> None:
     out_root = Path(args.out_dir)
     create_directories(out_root, args.overwrite)
@@ -700,15 +707,33 @@ def main(args) -> None:
     for n in val_range:   split_map[_rec_id_str(n)] = 'validation'
     for n in test_range:  split_map[_rec_id_str(n)] = 'testing'
 
+    all_rec_ids = sorted(split_map.keys())
+    tasks       = [(rec_id, args) for rec_id in all_rec_ids]
+
+    n_jobs = getattr(args, 'n_jobs', 0)
+    if n_jobs <= 0:
+        n_jobs = multiprocessing.cpu_count()
+
+    print(f'Processing {len(all_rec_ids)} recordings with {n_jobs} worker(s) ...')
+
+    if n_jobs == 1:
+        results = [_process_rec_worker(t) for t in tqdm(tasks, desc='Recordings')]
+    else:
+        with multiprocessing.Pool(n_jobs) as pool:
+            results = list(tqdm(
+                pool.imap_unordered(_process_rec_worker, tasks),
+                total=len(tasks), desc='Recordings'))
+
+    # Sort by rec_id so sample indices are deterministic regardless of completion order
+    results.sort(key=lambda r: r[0])
+
     counters = {'training': 0, 'validation': 0, 'testing': 0}
     id_lists = {'training': [], 'validation': [], 'testing': []}
 
-    all_rec_ids = sorted(split_map.keys())
-    for rec_id in tqdm(all_rec_ids, desc='Recordings'):
-        split   = split_map[rec_id]
-        samples = process_recording(rec_id, args)
+    for rec_id, samples in results:
         if not samples:
             continue
+        split = split_map[rec_id]
         for s in samples:
             idx = counters[split]
             save_sample(s, split, idx, out_root)
@@ -738,6 +763,8 @@ if __name__ == '__main__':
                     help='Output root directory')
     ap.add_argument('--overwrite', action='store_true',
                     help='Overwrite existing output directory')
+    ap.add_argument('--n_jobs', type=int, default=0,
+                    help='Number of parallel workers. 0 = use all CPU cores')
 
     # Temporal parameters (should match train.py dt=0.2 → 5 Hz)
     ap.add_argument('--target_hz',   type=float, default=3.0,

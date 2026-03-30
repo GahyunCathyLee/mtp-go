@@ -1,0 +1,47 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# MTP-GO experiment config
+# Run:  python train.py --config configs/example.yaml
+#       python test.py  --config configs/example.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+dataset:        highD-imp     # highD | highD-imp | rounD | inD
+sparse:         false
+n_workers:      4
+small_ds:       false
+
+# ── Trainer ───────────────────────────────────────────────────────────────────
+epochs:         100
+batch_size:     1024
+lr:             1.0e-4
+clip:           5.0
+teacher_forcing: 0.2
+log_interval:   100
+use_cuda:       true
+use_logger:     false         # set true to enable WandB logging
+seed:           42
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+motion_model:   2Xnode        # 1Xint | 2Xint | 3Xint | singletrack | unicycle |
+                              # curvature | curvilinear | neuralode | 2Xnode
+hidden_size:    64
+n_mixtures:     8
+gnn_layer:      natt          # graphconv | natt | ...
+n_gnn_layers:   1
+n_heads:        1
+ode_solver:     rk4
+n_ode_hidden:   16
+n_ode_layers:   1
+u1_lim:         10.0
+u2_lim:         10.0
+init_static:    false
+n_ode_static:   false
+use_edge_features: true
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+store_data:     true
+overwrite_data: false
+dry_run:        false
+tune_lr:        false
+tune_batch_size: false
+add_name:       ""

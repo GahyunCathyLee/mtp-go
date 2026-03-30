@@ -30,13 +30,15 @@ class LitDataModule(pl.LightningDataModule):
             self.target = 'rotational'
         else:
             self.target = 'planar'
+        self.use_importance = getattr(args, 'use_importance', True)
 
     def train_dataloader(self):
         dataset = TrajectoryPredictionDataset('training',
                                               self.dataset,
                                               small=self.small_ds,
                                               target=self.target,
-                                              sparse=self.sparse)
+                                              sparse=self.sparse,
+                                              use_importance=self.use_importance)
         return DataLoader(dataset,
                           batch_size=self.batch_size,
                           shuffle=True,
@@ -49,7 +51,8 @@ class LitDataModule(pl.LightningDataModule):
                                               self.dataset,
                                               small=self.small_ds,
                                               target=self.target,
-                                              sparse=self.sparse)
+                                              sparse=self.sparse,
+                                              use_importance=self.use_importance)
         return DataLoader(dataset,
                           batch_size=self.batch_size,
                           shuffle=False,
@@ -62,7 +65,8 @@ class LitDataModule(pl.LightningDataModule):
                                               self.dataset,
                                               small=self.small_ds,
                                               target=self.target,
-                                              sparse=self.sparse)
+                                              sparse=self.sparse,
+                                              use_importance=self.use_importance)
         return DataLoader(dataset,
                           batch_size=self.batch_size,
                           shuffle=False,
@@ -80,12 +84,14 @@ class TrajectoryPredictionDataset(Dataset):
                  feature_scaling: bool = False,
                  small: bool = False,
                  target: str = 'planar',
-                 sparse: bool = False):
+                 sparse: bool = False,
+                 use_importance: bool = True):
         super().__init__(None, transform, pre_transform)
         self.mode = train_test
         self.feat_scale = feature_scaling
         self.root = data_set_src
         self.target = target  # planar vs. rotational
+        self.use_importance = use_importance
         self.version = "sparse-gnn" if (sparse and data_set_src == "highD") else "gnn"
         self.ids = torch.load(f'data/{self.root}-{self.version}/{self.mode}/ids.pt')
         self.v_type_onehot = self._create_v_type_onehot(data_set_src)
@@ -96,7 +102,7 @@ class TrajectoryPredictionDataset(Dataset):
 
     @staticmethod
     def _create_v_type_onehot(data_set_src: str):
-        if data_set_src == 'highD':
+        if data_set_src in ('highD', 'highD-imp'):
             return {'Car': torch.Tensor([1, 0]),
                     'Truck': torch.Tensor([0, 1])}
         elif data_set_src == 'rounD':
@@ -143,8 +149,15 @@ class TrajectoryPredictionDataset(Dataset):
         graph_target[torch.logical_not(real_mask)] = 0
 
         if self.target == 'planar':
-            graph_input = graph_input[..., [0, 1, 3, 4, 5, 6, 2, 7, 8]]
-            graph_target = graph_target[..., [0, 1, 3, 4, 5, 6]]  # x, y, vx, vy, ax, ay
+            if self.root.startswith('highD-imp'):
+                # 7D input: [x/dx, y/dy, vx/dvx, vy/dvy, ax/dax, ay/day, I_feat]
+                # Drop importance (last dim) when use_importance=False → 6D
+                if not self.use_importance:
+                    graph_input = graph_input[..., :6]
+                # 6D target already ordered — no further selection needed
+            else:
+                graph_input = graph_input[..., [0, 1, 3, 4, 5, 6, 2, 7, 8]]
+                graph_target = graph_target[..., [0, 1, 3, 4, 5, 6]]  # x, y, vx, vy, ax, ay
         else:
             graph_input[..., 3] = torch.linalg.norm(graph_input[..., 3:4 + 1], dim=-1)
             graph_input = graph_input[..., [0, 1, 3, 2, 5, 6, 7, 8]]

@@ -1,7 +1,7 @@
 import os.path
 import warnings
 import time
-from argument_parser import args
+from config import parse_config
 from base_mdn import *
 from datamodule import *
 from models.gru_gnn import *
@@ -14,27 +14,26 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 warnings.filterwarnings('ignore', category=UserWarning, message='TypedStorage is deprecated')
 warnings.filterwarnings("ignore", ".*Checkpoint directory*")
 
+args = parse_config()
 
-def main(save_name, encoder, decoder):
-    path = f"saved_models/{args.dataset}/{save_name}.ckpt"
 
-    if os.path.exists(path) and not args.overwrite_data:
-        ckpt = path
-    else:
-        ckpt = None
+def main(encoder, decoder):
+    ckpt_dir  = f"ckpts/{args.config_name}"
+    ckpt_path = f"{ckpt_dir}/best.ckpt"
+
+    resume_ckpt = ckpt_path if (os.path.exists(ckpt_path) and not args.overwrite_data) else None
 
     callback_list = []
 
     if args.store_data:
-        checkpoint_callback = ModelCheckpoint(dirpath=f"saved_models/{args.dataset}/", filename=f"{save_name}")
-        checkpoint_callback_NLL = ModelCheckpoint(dirpath=f"saved_models/{args.dataset}/",
-                                                  filename=f"{save_name}_NLL", monitor="val_nll", mode="min")
-        checkpoint_callback_ADE = ModelCheckpoint(dirpath=f"saved_models/{args.dataset}/",
-                                                  filename=f"{save_name}_ADE", monitor="val_ade", mode="min")
-
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=ckpt_dir,
+            filename="best",
+            monitor="val_ade",
+            mode="min",
+            save_top_k=1,
+        )
         callback_list.append(checkpoint_callback)
-        callback_list.append(checkpoint_callback_NLL)
-        callback_list.append(checkpoint_callback_ADE)
 
     strategy = "auto"
     if torch.cuda.is_available() and args.use_cuda:
@@ -63,7 +62,7 @@ def main(save_name, encoder, decoder):
     if args.dry_run or not args.use_logger:
         logger = False
     else:
-        run_name = f"{save_name}_{time.strftime('%d-%m_%H:%M:%S')}"
+        run_name = f"{args.config_name}_{time.strftime('%d-%m_%H:%M:%S')}"
         logger = WandbLogger(project="mtp-go", name=run_name)
 
     trainer = Trainer(max_epochs=args.epochs,
@@ -78,12 +77,12 @@ def main(save_name, encoder, decoder):
                       callbacks=callback_list,
                       logger=logger)
 
-    trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt)
+    trainer.fit(model, datamodule=datamodule, ckpt_path=resume_ckpt)
 
 
 if __name__ == "__main__":
     seed_everything(args.seed, workers=True)
-    if args.dataset == 'highD':
+    if args.dataset in ('highD', 'highD-imp'):
         input_len = 2
         v_types = 2
     elif args.dataset == 'rounD':
@@ -93,7 +92,12 @@ if __name__ == "__main__":
         input_len = 3
         v_types = 4
 
-    n_features = 8 if args.motion_model in ('singletrack', 'unicycle', 'curvature', 'curvilinear') else 9
+    if args.dataset == 'highD-imp':
+        # use_importance=True  → 7D: [x/dx, y/dy, vx/dvx, vy/dvy, ax/dax, ay/day, I_feat]
+        # use_importance=False → 6D: [x/dx, y/dy, vx/dvx, vy/dvy, ax/dax, ay/day]
+        n_features = 7 if getattr(args, 'use_importance', True) else 6
+    else:
+        n_features = 8 if args.motion_model in ('singletrack', 'unicycle', 'curvature', 'curvilinear') else 9
     static_f_dim = v_types * int(args.n_ode_static)  # 0 if static not used in N-ODE
 
     dt = 2e-1
@@ -128,12 +132,9 @@ if __name__ == "__main__":
         m_model = SecondOrderNeuralODE(solver=args.ode_solver, dt=dt, mixtures=args.n_mixtures,
                                        static_f_dim=static_f_dim, n_hidden=args.n_ode_hidden,
                                        n_layers=args.n_ode_layers)
-    save_name = type(m_model).__name__
-
-    d_str = args.dataset
-    full_save_name = f"{save_name}{args.hidden_size}G{args.n_gnn_layers}{d_str[0].upper() + d_str[1:]}{args.add_name}"
     print(f'----------------------------------------------------')
-    print(f'\nGetting ready to train model: {full_save_name} \n')
+    print(f'\nConfig : {args.config_name}  ({args.config_path})')
+    print(f'Ckpt   : ckpts/{args.config_name}/best.ckpt\n')
     print(f'----------------------------------------------------')
 
     encoder = GRUGNNEncoder(input_size=n_features,
@@ -155,4 +156,4 @@ if __name__ == "__main__":
                             gnn_layer=args.gnn_layer,
                             init_static=args.init_static)
 
-    main(full_save_name, encoder, decoder)
+    main(encoder, decoder)

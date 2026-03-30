@@ -266,20 +266,30 @@ class LitEncoderDecoder(pl.LightningModule):
 
         tv_ape = path_dist[ptr].mean()
 
+        # RMSE: sqrt of mean squared Euclidean error over vehicles and timesteps
+        sq_err    = ((most_likely_trajs - target) ** 2).sum(dim=-1)  # (B, T)
+        n_total   = dec_mask.sum().clamp(min=1)
+        rmse      = torch.sqrt((sq_err * dec_mask).sum() / n_total)
+
+        tv_sq_err = sq_err[ptr]                                       # (N_scenes, T)
+        tv_rmse   = torch.sqrt(tv_sq_err.mean())
+
         results = {
-            "test_tv_ade": tv_ade,
-            "test_tv_fde": tv_fde,
+            "test_tv_ade":  tv_ade,
+            "test_tv_fde":  tv_fde,
+            "test_tv_rmse": tv_rmse,
             "test_tv_anll": tv_nll / target_length,
             "test_tv_fnll": tv_fnll,
             "test_tv_apde": tv_ape,
-            "tv_mr": tv_mr,
+            "tv_mr":        tv_mr,
 
-            "test_ade": ade,
-            "test_fde": fde,
+            "test_ade":  ade,
+            "test_fde":  fde,
+            "test_rmse": rmse,
             "test_anll": nll_loss / target_length,
             "test_fnll": fnll_loss,
             "test_apde": ape,
-            "mr": mr
+            "mr":        mr,
         }
 
         self.log_dict(results, on_epoch=True, sync_dist=True, batch_size=batch_size)

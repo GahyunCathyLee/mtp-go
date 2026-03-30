@@ -28,7 +28,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -263,7 +263,7 @@ def _build_edges(nb_dx: np.ndarray, nb_dy: np.ndarray,
 # Per-recording processing
 # ─────────────────────────────────────────────────────────────────────────────
 
-def process_recording(rec_id: str, args) -> Optional[List[dict]]:
+def process_recording(rec_id: str, args):
     raw_dir = Path(args.data_dir)
     try:
         rec_meta = pd.read_csv(raw_dir / f"{rec_id}_recordingMeta.csv")
@@ -388,7 +388,6 @@ def process_recording(rec_id: str, args) -> Optional[List[dict]]:
     )
 
     imp_feat_idx = {'I_x': 0, 'I_y': 1, 'I': 2}[args.importance_feat]
-    samples: List[dict] = []
 
     # ── Iterate over ego vehicles ─────────────────────────────────────────────
     for v_, idxs in per_vid_rows.items():
@@ -625,7 +624,7 @@ def process_recording(rec_id: str, args) -> Optional[List[dict]]:
                 length       = [vid_to_lon.get(v_, 0.)] + nb_lengths,
             )
 
-            samples.append({
+            yield {
                 'inp':     torch.from_numpy(inp).float(),
                 'tgt':     torch.from_numpy(tgt).float(),
                 'hist_ei': hist_ei,
@@ -633,11 +632,9 @@ def process_recording(rec_id: str, args) -> Optional[List[dict]]:
                 'fut_ei':  fut_ei,
                 'fut_ef':  fut_ef,
                 'meta':    meta,
-            })
+            }
 
             t0_frame += stride * step
-
-    return samples if samples else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -661,19 +658,16 @@ def create_directories(out_root: Path, overwrite: bool) -> None:
 # Save one sample
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_sample(sample: dict, split: str, idx: int, out_root: Path) -> None:
+def save_sample(sample: dict, idx: int,
+                obs_dir: Path, tar_dir: Path, meta_dir: Path) -> None:
     inp  = sample['inp']   # (K+1, T,  N_IN)
     tgt  = sample['tgt']   # (K+1, Tf, N_OUT)
 
     nan_mask  = torch.isnan(inp)
     real_mask = ~torch.isnan(tgt)
 
-    inp_clean = inp.clone();  inp_clean[nan_mask]          = 0.0
-    tgt_clean = tgt.clone();  tgt_clean[~real_mask]        = 0.0
-
-    obs_dir  = out_root / split / 'observation'
-    tar_dir  = out_root / split / 'target'
-    meta_dir = out_root / split / 'meta'
+    inp_clean = inp.clone();  inp_clean[nan_mask]   = 0.0
+    tgt_clean = tgt.clone();  tgt_clean[~real_mask] = 0.0
 
     torch.save(inp_clean,          obs_dir / f'dat{idx}.pt')
     torch.save(nan_mask,           obs_dir / f'nan_mask{idx}.pt')
@@ -696,15 +690,36 @@ def _rec_id_str(n: int) -> str:
     return f'{n:02d}'
 
 
-def _process_rec_worker(rec_id_args):
-    """Top-level picklable worker for multiprocessing.Pool."""
-    rec_id, args = rec_id_args
-    return rec_id, process_recording(rec_id, args)
+def _process_and_save_worker(packed):
+    """
+    Worker: iterate process_recording (generator) and save each sample
+    directly to a per-recording tmp directory.  Returns only (rec_id, count)
+    so no sample data is sent back through the IPC channel.
+    """
+    rec_id, args, tmp_root = packed
+    tmp_dir = Path(tmp_root) / rec_id
+    obs_dir  = tmp_dir / 'observation'
+    tar_dir  = tmp_dir / 'target'
+    meta_dir = tmp_dir / 'meta'
+    for d in (obs_dir, tar_dir, meta_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    count = 0
+    try:
+        for sample in process_recording(rec_id, args):
+            save_sample(sample, count, obs_dir, tar_dir, meta_dir)
+            count += 1
+    except Exception as exc:
+        print(f'  [WARN] rec {rec_id} failed: {exc}')
+    return rec_id, count
 
 
 def main(args) -> None:
     out_root = Path(args.out_dir)
     create_directories(out_root, args.overwrite)
+
+    tmp_root = out_root / '_tmp'
+    tmp_root.mkdir(exist_ok=True)
 
     # Determine split ranges
     train_range = range(args.train_start, args.train_end + 1)
@@ -717,7 +732,7 @@ def main(args) -> None:
     for n in test_range:  split_map[_rec_id_str(n)] = 'testing'
 
     all_rec_ids = sorted(split_map.keys())
-    tasks       = [(rec_id, args) for rec_id in all_rec_ids]
+    tasks = [(rec_id, args, str(tmp_root)) for rec_id in all_rec_ids]
 
     n_jobs = getattr(args, 'n_jobs', 0)
     if n_jobs <= 0:
@@ -725,31 +740,53 @@ def main(args) -> None:
 
     print(f'Processing {len(all_rec_ids)} recordings with {n_jobs} worker(s) ...')
 
+    # ── Pass 1: process recordings in parallel, save to tmp dirs ─────────────
+    # Workers return only (rec_id, count) — no sample data through IPC.
+    if n_jobs == 1:
+        results = [_process_and_save_worker(t)
+                   for t in tqdm(tasks, desc='Processing')]
+    else:
+        with multiprocessing.Pool(n_jobs) as pool:
+            results = list(tqdm(
+                pool.imap(_process_and_save_worker, tasks, chunksize=1),
+                total=len(tasks), desc='Processing'))
+
+    # Sort by rec_id for deterministic sample indices
+    results.sort(key=lambda r: r[0])
+
+    # ── Pass 2: rename tmp files to final location in rec_id order ───────────
     counters = {'training': 0, 'validation': 0, 'testing': 0}
     id_lists = {'training': [], 'validation': [], 'testing': []}
 
-    def _save_recording(rec_id, samples):
-        if not samples:
-            return
-        split = split_map[rec_id]
-        for s in samples:
-            idx = counters[split]
-            save_sample(s, split, idx, out_root)
-            id_lists[split].append(idx)
+    for rec_id, n_samples in tqdm(results, desc='Merging'):
+        if n_samples == 0:
+            continue
+        split   = split_map[rec_id]
+        tmp_dir = tmp_root / rec_id
+        obs_src  = tmp_dir / 'observation'
+        tar_src  = tmp_dir / 'target'
+        meta_src = tmp_dir / 'meta'
+        obs_dst  = out_root / split / 'observation'
+        tar_dst  = out_root / split / 'target'
+        meta_dst = out_root / split / 'meta'
+
+        for i in range(n_samples):
+            new_idx = counters[split]
+            (obs_src  / f'dat{i}.pt').rename(       obs_dst  / f'dat{new_idx}.pt')
+            (obs_src  / f'nan_mask{i}.pt').rename(  obs_dst  / f'nan_mask{new_idx}.pt')
+            (obs_src  / f'edge_idx{i}.pt').rename(  obs_dst  / f'edge_idx{new_idx}.pt')
+            (obs_src  / f'edge_feat{i}.pt').rename( obs_dst  / f'edge_feat{new_idx}.pt')
+            (tar_src  / f'dat{i}.pt').rename(       tar_dst  / f'dat{new_idx}.pt')
+            (tar_src  / f'real_mask{i}.pt').rename( tar_dst  / f'real_mask{new_idx}.pt')
+            (tar_src  / f'edge_idx{i}.pt').rename(  tar_dst  / f'edge_idx{new_idx}.pt')
+            (tar_src  / f'edge_feat{i}.pt').rename( tar_dst  / f'edge_feat{new_idx}.pt')
+            (meta_src / f'dat{i}.pt').rename(       meta_dst / f'dat{new_idx}.pt')
+            id_lists[split].append(new_idx)
             counters[split] += 1
 
-    # Use imap (ordered) so rec_ids arrive in sorted order → deterministic indices.
-    # Results are consumed one at a time: only ~n_jobs recordings are in-flight at once.
-    if n_jobs == 1:
-        for task in tqdm(tasks, desc='Recordings'):
-            rec_id, samples = _process_rec_worker(task)
-            _save_recording(rec_id, samples)
-    else:
-        with multiprocessing.Pool(n_jobs) as pool:
-            for rec_id, samples in tqdm(
-                    pool.imap(_process_rec_worker, tasks, chunksize=1),
-                    total=len(tasks), desc='Recordings'):
-                _save_recording(rec_id, samples)
+        shutil.rmtree(tmp_dir)
+
+    shutil.rmtree(tmp_root, ignore_errors=True)
 
     for split in ('training', 'validation', 'testing'):
         torch.save(id_lists[split], out_root / split / 'ids.pt')

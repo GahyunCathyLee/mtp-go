@@ -725,29 +725,31 @@ def main(args) -> None:
 
     print(f'Processing {len(all_rec_ids)} recordings with {n_jobs} worker(s) ...')
 
-    if n_jobs == 1:
-        results = [_process_rec_worker(t) for t in tqdm(tasks, desc='Recordings')]
-    else:
-        with multiprocessing.Pool(n_jobs) as pool:
-            results = list(tqdm(
-                pool.imap_unordered(_process_rec_worker, tasks),
-                total=len(tasks), desc='Recordings'))
-
-    # Sort by rec_id so sample indices are deterministic regardless of completion order
-    results.sort(key=lambda r: r[0])
-
     counters = {'training': 0, 'validation': 0, 'testing': 0}
     id_lists = {'training': [], 'validation': [], 'testing': []}
 
-    for rec_id, samples in results:
+    def _save_recording(rec_id, samples):
         if not samples:
-            continue
+            return
         split = split_map[rec_id]
         for s in samples:
             idx = counters[split]
             save_sample(s, split, idx, out_root)
             id_lists[split].append(idx)
             counters[split] += 1
+
+    # Use imap (ordered) so rec_ids arrive in sorted order → deterministic indices.
+    # Results are consumed one at a time: only ~n_jobs recordings are in-flight at once.
+    if n_jobs == 1:
+        for task in tqdm(tasks, desc='Recordings'):
+            rec_id, samples = _process_rec_worker(task)
+            _save_recording(rec_id, samples)
+    else:
+        with multiprocessing.Pool(n_jobs) as pool:
+            for rec_id, samples in tqdm(
+                    pool.imap(_process_rec_worker, tasks, chunksize=1),
+                    total=len(tasks), desc='Recordings'):
+                _save_recording(rec_id, samples)
 
     for split in ('training', 'validation', 'testing'):
         torch.save(id_lists[split], out_root / split / 'ids.pt')

@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# exp_no_imp — highD-imp dataset, 6D input (importance dropped at load time)
+# Run:  python train.py --config configs/exp_no_imp.yaml
+#       python test.py  --config configs/exp_no_imp.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+dataset:        highD-imp
+sparse:         false
+n_workers:      24
+small_ds:       false
+
+epochs:         100
+batch_size:     1024
+lr:             1.0e-4
+clip:           5.0
+teacher_forcing: 0.2
+log_interval:   100
+use_cuda:       true
+use_logger:     false
+seed:           1234
+
+motion_model:   2Xnode
+hidden_size:    64
+n_mixtures:     8
+gnn_layer:      natt
+n_gnn_layers:   1
+n_heads:        1
+ode_solver:     rk4
+n_ode_hidden:   16
+n_ode_layers:   1
+u1_lim:         10.0
+u2_lim:         10.0
+init_static:    false
+n_ode_static:   false
+use_edge_features: true
+
+# 6D input: importance feature is dropped at load time (same preprocessed data)
+use_importance: false
+
+store_data:     true
+overwrite_data: false
+ckpt_dir:       /content/drive/MyDrive/TrajectoryPrediction/MTP-GO/ckpts
+dry_run:        false
+tune_lr:        false
+tune_batch_size: false
+add_name:       ""

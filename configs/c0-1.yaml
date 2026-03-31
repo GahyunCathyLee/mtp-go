@@ -39,6 +39,7 @@ use_importance: false
 
 store_data:     true
 overwrite_data: false
+ckpt_dir:       ckpts
 dry_run:        false
 tune_lr:        false
 tune_batch_size: false

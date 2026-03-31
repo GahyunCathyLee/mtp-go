@@ -55,6 +55,7 @@ DEFAULTS: Dict[str, Any] = {
     "n_workers":        1,
     "store_data":       True,
     "overwrite_data":   False,
+    "ckpt_dir":         "ckpts",
     "add_name":         "",
     "dry_run":          False,
     "tune_lr":          False,
@@ -113,6 +114,13 @@ def parse_config() -> SimpleNamespace:
         "--config", required=True, metavar="PATH",
         help="Path to YAML experiment config  (e.g. configs/test1.yaml)",
     )
+    parser.add_argument(
+        "--ckpt_dir", default=None, metavar="DIR",
+        help="Root directory for checkpoints (overrides YAML ckpt_dir)",
+    )
     # Allow unknown args so this can coexist with Lightning's own CLI parsing
     args, _ = parser.parse_known_args()
-    return load_config(args.config)
+    ns = load_config(args.config)
+    if args.ckpt_dir is not None:
+        ns.ckpt_dir = args.ckpt_dir
+    return ns

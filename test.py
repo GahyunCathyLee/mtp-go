@@ -15,7 +15,7 @@ args = parse_config()
 
 
 def main(encoder, decoder):
-    ckpt_path = f"ckpts/{args.config_name}/best.ckpt"
+    ckpt_path = f"{args.ckpt_dir}/{args.config_name}/best.ckpt"
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
@@ -31,7 +31,7 @@ def main(encoder, decoder):
     if not args.dry_run:
         from json import dumps
         json_object = dumps(results, indent=4)
-        out_path = f"ckpts/{args.config_name}/results.json"
+        out_path = f"{args.ckpt_dir}/{args.config_name}/results.json"
         with open(out_path, "w") as f:
             f.write(json_object)
         print(f"\nResults saved to {out_path}")
@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
     print(f'----------------------------------------------------')
     print(f'\nConfig : {args.config_name}  ({args.config_path})')
-    print(f'Ckpt   : ckpts/{args.config_name}/best.ckpt\n')
+    print(f'Ckpt   : {args.ckpt_dir}/{args.config_name}/best.ckpt\n')
     print(f'----------------------------------------------------')
 
     encoder = GRUGNNEncoder(input_size=n_features,

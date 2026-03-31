@@ -50,7 +50,7 @@ args = parse_config()
 
 
 def main(encoder, decoder):
-    ckpt_dir  = f"ckpts/{args.config_name}"
+    ckpt_dir  = f"{args.ckpt_dir}/{args.config_name}"
     ckpt_path = f"{ckpt_dir}/best.ckpt"
 
     resume_ckpt = ckpt_path if (os.path.exists(ckpt_path) and not args.overwrite_data) else None
@@ -167,7 +167,7 @@ if __name__ == "__main__":
                                        n_layers=args.n_ode_layers)
     print(f'----------------------------------------------------')
     print(f'\nConfig : {args.config_name}  ({args.config_path})')
-    print(f'Ckpt   : ckpts/{args.config_name}/best.ckpt\n')
+    print(f'Ckpt   : {args.ckpt_dir}/{args.config_name}/best.ckpt\n')
     print(f'----------------------------------------------------')
 
     encoder = GRUGNNEncoder(input_size=n_features,

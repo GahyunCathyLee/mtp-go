@@ -39,6 +39,7 @@ use_importance: true
 
 store_data:     true
 overwrite_data: false
+ckpt_dir:       /content/drive/MyDrive/TrajectoryPrediction/MTP-GO/ckpts
 dry_run:        false
 tune_lr:        false
 tune_batch_size: false

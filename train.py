@@ -105,6 +105,7 @@ def main(encoder, decoder):
                       deterministic=False,
                       gradient_clip_val=args.clip,
                       enable_checkpointing=args.store_data,
+                      enable_progress_bar=False,
                       fast_dev_run=args.dry_run,
                       log_every_n_steps=args.log_interval,
                       callbacks=callback_list,

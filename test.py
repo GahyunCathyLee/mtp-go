@@ -1,3 +1,5 @@
+import pathlib
+import types
 import warnings
 import os.path
 from config import parse_config
@@ -5,6 +7,14 @@ from base_mdn import *
 from datamodule import *
 from models.gru_gnn import *
 from lightning.pytorch import Trainer, seed_everything
+
+import torch.serialization
+torch.serialization.add_safe_globals([
+    types.SimpleNamespace,
+    pathlib.PosixPath,
+    pathlib.WindowsPath,
+    pathlib.Path,
+])
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 

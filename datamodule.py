@@ -93,7 +93,7 @@ class TrajectoryPredictionDataset(Dataset):
         self.target = target  # planar vs. rotational
         self.use_importance = use_importance
         self.version = "sparse-gnn" if (sparse and data_set_src == "highD") else "gnn"
-        self.ids = torch.load(f'data/{self.root}-{self.version}/{self.mode}/ids.pt')
+        self.ids = torch.load(f'data/{self.root}-{self.version}/{self.mode}/ids.pt', weights_only=False)
         self.v_type_onehot = self._create_v_type_onehot(data_set_src)
 
         if small:
@@ -134,41 +134,39 @@ class TrajectoryPredictionDataset(Dataset):
         graph_target_ef.len (tar_seq_len), graph_target_ef[-1].shape (2, n_edges)
 
         """
-        #  Model inputs
-        graph_input = torch.load(f'data/{self.root}-{self.version}/{self.mode}/observation/dat{idx}.pt')
-        nan_mask = torch.load(f'data/{self.root}-{self.version}/{self.mode}/observation/nan_mask{idx}.pt')
-        graph_input[nan_mask] = 0
-        graph_inp_ei = torch.load(f'data/{self.root}-{self.version}/{self.mode}/observation/edge_idx{idx}.pt')
-        graph_input_ef = torch.load(f'data/{self.root}-{self.version}/{self.mode}/observation/edge_feat{idx}.pt')
+        bundle = torch.load(
+            f'data/{self.root}-{self.version}/{self.mode}/samples/dat{idx}.pt',
+            weights_only=False,
+        )
 
-        #  Model targets
-        graph_target = torch.load(f'data/{self.root}-{self.version}/{self.mode}/target/dat{idx}.pt')
-        graph_target_ei = torch.load(f'data/{self.root}-{self.version}/{self.mode}/target/edge_idx{idx}.pt')
-        graph_target_ef = torch.load(f'data/{self.root}-{self.version}/{self.mode}/target/edge_feat{idx}.pt')
-        real_mask = torch.load(f'data/{self.root}-{self.version}/{self.mode}/target/real_mask{idx}.pt')
+        graph_input    = bundle['inp']
+        nan_mask       = bundle['nan_mask']
+        graph_inp_ei   = bundle['hist_ei']
+        graph_input_ef = bundle['hist_ef']
+        graph_target   = bundle['tgt']
+        real_mask      = bundle['real_mask']
+        graph_target_ei = bundle['fut_ei']
+        graph_target_ef = bundle['fut_ef']
+
+        graph_input[nan_mask] = 0
         graph_target[torch.logical_not(real_mask)] = 0
 
         if self.target == 'planar':
             if self.root.startswith('highD-imp'):
-                # 7D input: [x/dx, y/dy, vx/dvx, vy/dvy, ax/dax, ay/day, I_feat]
-                # Drop importance (last dim) when use_importance=False → 6D
                 if not self.use_importance:
                     graph_input = graph_input[..., :6]
-                # 6D target already ordered — no further selection needed
             else:
-                graph_input = graph_input[..., [0, 1, 3, 4, 5, 6, 2, 7, 8]]
-                graph_target = graph_target[..., [0, 1, 3, 4, 5, 6]]  # x, y, vx, vy, ax, ay
+                graph_input  = graph_input[...,  [0, 1, 3, 4, 5, 6, 2, 7, 8]]
+                graph_target = graph_target[..., [0, 1, 3, 4, 5, 6]]
         else:
             graph_input[..., 3] = torch.linalg.norm(graph_input[..., 3:4 + 1], dim=-1)
-            graph_input = graph_input[..., [0, 1, 3, 2, 5, 6, 7, 8]]
+            graph_input  = graph_input[...,  [0, 1, 3, 2, 5, 6, 7, 8]]
             graph_target[..., 3] = torch.linalg.norm(graph_target[..., 3:4 + 1], dim=-1)
-            graph_target = graph_target[..., [0, 1, 3, 2]]  # x, y, v, psi
+            graph_target = graph_target[..., [0, 1, 3, 2]]
 
-            #  Static features and targets
-        meta_info = torch.load(f'data/{self.root}-{self.version}/{self.mode}/meta/dat{idx}.pt')
-        cf = torch.tensor(meta_info.maneuver_id).long()
-        dim = torch.tensor((meta_info.length, meta_info.width)).permute(1, 0).float()
-        v_type = torch.stack([self.v_type_onehot[v_type] for v_type in meta_info.vehicle_types])
+        cf     = torch.tensor(bundle['maneuver_id']).long()
+        dim    = torch.tensor((bundle['length'], bundle['width'])).permute(1, 0).float()
+        v_type = torch.stack([self.v_type_onehot[vt] for vt in bundle['vehicle_types']])
 
         data = Data(x=graph_input, edge_index=graph_inp_ei, edge_features=graph_input_ef,
                     y=graph_target, tar_edge_index=graph_target_ei, tar_edge_features=graph_target_ef,

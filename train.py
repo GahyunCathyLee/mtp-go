@@ -1,13 +1,45 @@
 import os.path
+import types
+import pathlib
 import warnings
 import time
+import torch.serialization
+torch.serialization.add_safe_globals([
+    types.SimpleNamespace,
+    pathlib.PosixPath,
+    pathlib.WindowsPath,
+    pathlib.Path,
+])
 from config import parse_config
 from base_mdn import *
 from datamodule import *
 from models.gru_gnn import *
 from lightning.pytorch import Trainer, seed_everything
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint, Callback
 from lightning.pytorch.loggers import WandbLogger
+
+
+class EpochSummaryCallback(Callback):
+    """에포크 끝에 train_loss / val_ade / val_fde / val_nll 한 줄 출력."""
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        # sanity check 에포크(-1)는 건너뜀
+        if trainer.sanity_checking:
+            return
+        m = trainer.callback_metrics
+        ep  = trainer.current_epoch + 1
+        tot = trainer.max_epochs
+
+        loss = m.get('train_loss', float('nan'))
+        ade  = m.get('val_ade',    float('nan'))
+        fde  = m.get('val_fde',    float('nan'))
+        nll  = m.get('val_nll',    float('nan'))
+
+        print(f"\nEpoch {ep:3d}/{tot}"
+              f"  loss={loss:.4f}"
+              f"  ADE={ade:.4f}"
+              f"  FDE={fde:.4f}"
+              f"  NLL={nll:.4f}")
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
@@ -23,7 +55,7 @@ def main(encoder, decoder):
 
     resume_ckpt = ckpt_path if (os.path.exists(ckpt_path) and not args.overwrite_data) else None
 
-    callback_list = []
+    callback_list = [EpochSummaryCallback()]
 
     if args.store_data:
         checkpoint_callback = ModelCheckpoint(
@@ -32,6 +64,7 @@ def main(encoder, decoder):
             monitor="val_ade",
             mode="min",
             save_top_k=1,
+            verbose=True,
         )
         callback_list.append(checkpoint_callback)
 

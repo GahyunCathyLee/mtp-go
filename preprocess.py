@@ -643,25 +643,21 @@ def process_recording(rec_id: str, args):
 
 def create_directories(out_root: Path, overwrite: bool) -> None:
     splits = ('training', 'validation', 'testing')
-    subdirs = ('observation', 'target', 'meta')
     for split in splits:
-        for sub in subdirs:
-            d = out_root / split / sub
-            if d.exists() and overwrite:
-                shutil.rmtree(out_root / split)
-                break
-        for sub in subdirs:
-            (out_root / split / sub).mkdir(parents=True, exist_ok=True)
+        d = out_root / split / 'samples'
+        if d.exists() and overwrite:
+            shutil.rmtree(out_root / split)
+        (out_root / split / 'samples').mkdir(parents=True, exist_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Save one sample
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_sample(sample: dict, idx: int,
-                obs_dir: Path, tar_dir: Path, meta_dir: Path) -> None:
-    inp  = sample['inp']   # (K+1, T,  N_IN)
-    tgt  = sample['tgt']   # (K+1, Tf, N_OUT)
+def save_sample(sample: dict, idx: int, samples_dir: Path) -> None:
+    inp = sample['inp']   # (K+1, T,  N_IN)
+    tgt = sample['tgt']   # (K+1, Tf, N_OUT)
+    meta = sample['meta']
 
     nan_mask  = torch.isnan(inp)
     real_mask = ~torch.isnan(tgt)
@@ -669,17 +665,20 @@ def save_sample(sample: dict, idx: int,
     inp_clean = inp.clone();  inp_clean[nan_mask]   = 0.0
     tgt_clean = tgt.clone();  tgt_clean[~real_mask] = 0.0
 
-    torch.save(inp_clean,          obs_dir / f'dat{idx}.pt')
-    torch.save(nan_mask,           obs_dir / f'nan_mask{idx}.pt')
-    torch.save(sample['hist_ei'],  obs_dir / f'edge_idx{idx}.pt')
-    torch.save(sample['hist_ef'],  obs_dir / f'edge_feat{idx}.pt')
-
-    torch.save(tgt_clean,          tar_dir / f'dat{idx}.pt')
-    torch.save(real_mask,          tar_dir / f'real_mask{idx}.pt')
-    torch.save(sample['fut_ei'],   tar_dir / f'edge_idx{idx}.pt')
-    torch.save(sample['fut_ef'],   tar_dir / f'edge_feat{idx}.pt')
-
-    torch.save(sample['meta'],     meta_dir / f'dat{idx}.pt')
+    torch.save({
+        'inp':           inp_clean,
+        'nan_mask':      nan_mask,
+        'hist_ei':       sample['hist_ei'],
+        'hist_ef':       sample['hist_ef'],
+        'tgt':           tgt_clean,
+        'real_mask':     real_mask,
+        'fut_ei':        sample['fut_ei'],
+        'fut_ef':        sample['fut_ef'],
+        'maneuver_id':   meta.maneuver_id,
+        'vehicle_types': meta.vehicle_types,
+        'length':        meta.length,
+        'width':         meta.width,
+    }, samples_dir / f'dat{idx}.pt')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -693,21 +692,17 @@ def _rec_id_str(n: int) -> str:
 def _process_and_save_worker(packed):
     """
     Worker: iterate process_recording (generator) and save each sample
-    directly to a per-recording tmp directory.  Returns only (rec_id, count)
-    so no sample data is sent back through the IPC channel.
+    as a single bundled file to a per-recording tmp directory.
+    Returns only (rec_id, count) so no sample data is sent through IPC.
     """
     rec_id, args, tmp_root = packed
-    tmp_dir = Path(tmp_root) / rec_id
-    obs_dir  = tmp_dir / 'observation'
-    tar_dir  = tmp_dir / 'target'
-    meta_dir = tmp_dir / 'meta'
-    for d in (obs_dir, tar_dir, meta_dir):
-        d.mkdir(parents=True, exist_ok=True)
+    samples_dir = Path(tmp_root) / rec_id / 'samples'
+    samples_dir.mkdir(parents=True, exist_ok=True)
 
     count = 0
     try:
         for sample in process_recording(rec_id, args):
-            save_sample(sample, count, obs_dir, tar_dir, meta_dir)
+            save_sample(sample, count, samples_dir)
             count += 1
     except Exception as exc:
         print(f'  [WARN] rec {rec_id} failed: {exc}')
@@ -761,30 +756,17 @@ def main(args) -> None:
     for rec_id, n_samples in tqdm(results, desc='Merging'):
         if n_samples == 0:
             continue
-        split   = split_map[rec_id]
-        tmp_dir = tmp_root / rec_id
-        obs_src  = tmp_dir / 'observation'
-        tar_src  = tmp_dir / 'target'
-        meta_src = tmp_dir / 'meta'
-        obs_dst  = out_root / split / 'observation'
-        tar_dst  = out_root / split / 'target'
-        meta_dst = out_root / split / 'meta'
+        split       = split_map[rec_id]
+        samples_src = tmp_root / rec_id / 'samples'
+        samples_dst = out_root / split / 'samples'
 
         for i in range(n_samples):
             new_idx = counters[split]
-            (obs_src  / f'dat{i}.pt').rename(       obs_dst  / f'dat{new_idx}.pt')
-            (obs_src  / f'nan_mask{i}.pt').rename(  obs_dst  / f'nan_mask{new_idx}.pt')
-            (obs_src  / f'edge_idx{i}.pt').rename(  obs_dst  / f'edge_idx{new_idx}.pt')
-            (obs_src  / f'edge_feat{i}.pt').rename( obs_dst  / f'edge_feat{new_idx}.pt')
-            (tar_src  / f'dat{i}.pt').rename(       tar_dst  / f'dat{new_idx}.pt')
-            (tar_src  / f'real_mask{i}.pt').rename( tar_dst  / f'real_mask{new_idx}.pt')
-            (tar_src  / f'edge_idx{i}.pt').rename(  tar_dst  / f'edge_idx{new_idx}.pt')
-            (tar_src  / f'edge_feat{i}.pt').rename( tar_dst  / f'edge_feat{new_idx}.pt')
-            (meta_src / f'dat{i}.pt').rename(       meta_dst / f'dat{new_idx}.pt')
+            (samples_src / f'dat{i}.pt').rename(samples_dst / f'dat{new_idx}.pt')
             id_lists[split].append(new_idx)
             counters[split] += 1
 
-        shutil.rmtree(tmp_dir)
+        shutil.rmtree(tmp_root / rec_id)
 
     shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -815,7 +797,7 @@ if __name__ == '__main__':
                     help='Number of parallel workers. 0 = use all CPU cores')
 
     # Temporal parameters (should match train.py dt=0.2 → 5 Hz)
-    ap.add_argument('--target_hz',   type=float, default=3.0,
+    ap.add_argument('--target_hz',   type=float, default=5.0,
                     help='Target sampling rate [Hz] — must match train.py dt (default 5 Hz = dt 0.2s)')
     ap.add_argument('--history_sec', type=float, default=2.0,
                     help='History length [s] — matches MTP-GO input_len=2')
